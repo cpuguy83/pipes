@@ -1,21 +1,83 @@
 package pipes
 
 import (
+	"bytes"
 	"io"
 	"io/ioutil"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestReadFrom(t *testing.T) {
-	p, f := prepareReadFrom(t, 1e6)
-	defer p.Close()
-	defer func() {
-		f.Close()
-		os.RemoveAll(f.Name())
-	}()
-	doReadFromTest(t, p, f, 1e6)
+	t.Run("raw", func(t *testing.T) {
+		t.Run("regular file", func(t *testing.T) {
+			p, f := prepareReadFrom(t, 1e6)
+			defer p.Close()
+			defer func() {
+				f.Close()
+				os.RemoveAll(f.Name())
+			}()
+			doReadFromTest(t, p, f, 1e6)
+		})
+
+		t.Run("limited reader", func(t *testing.T) {
+			p, f := prepareReadFrom(t, 2e6)
+			defer p.Close()
+			defer func() {
+				f.Close()
+				os.RemoveAll(f.Name())
+			}()
+
+			// Note the file has 2e6 bytes but we limit to 1e6
+			limit := &io.LimitedReader{R: f, N: 1e6}
+			doReadFromTest(t, p, limit, limit.N)
+		})
+	})
+
+	t.Run("userspace", func(t *testing.T) {
+		t.Run("fallback copy", func(t *testing.T) {
+			pr, pw, err := New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer pr.Close()
+			defer pw.Close()
+
+			go io.Copy(ioutil.Discard, pr)
+
+			buf := bytes.NewReader(make([]byte, 1e6))
+			doReadFromTest(t, pw, buf, 1e6)
+		})
+
+		t.Run("limited reader", func(t *testing.T) {
+			pr, pw, err := New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer pr.Close()
+			defer pw.Close()
+			go io.Copy(ioutil.Discard, pr)
+
+			// Note the buffer is 2e6, and we limit with 1e6.
+			buf := &io.LimitedReader{R: bytes.NewReader(make([]byte, 2e6)), N: 1e6}
+			doReadFromTest(t, pw, buf, buf.N)
+		})
+	})
+}
+
+func TestOpenFifo(t *testing.T) {
+	dir := t.TempDir()
+
+	t.Run("async open", func(t *testing.T) {
+		_, pw, err := OpenFifo(filepath.Join(dir, filepath.Base(t.Name())), unix.O_NONBLOCK|os.O_CREATE|os.O_WRONLY, 0600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pw.Close()
+	})
 }
 
 func BenchmarkReadFrom(b *testing.B) {
@@ -55,7 +117,8 @@ func doBenchReadFrom(b *testing.B, total int64) {
 	}
 }
 
-func doReadFromTest(t testing.TB, p *Pipe, f io.Reader, total int64) {
+func doReadFromTest(t testing.TB, p *PipeWriter, f io.Reader, total int64) {
+	t.Helper()
 	n, err := p.ReadFrom(f)
 	if err != nil {
 		t.Fatal(err)
@@ -65,7 +128,7 @@ func doReadFromTest(t testing.TB, p *Pipe, f io.Reader, total int64) {
 	}
 }
 
-func prepareReadFrom(t testing.TB, total int64) (*Pipe, *os.File) {
+func prepareReadFrom(t testing.TB, total int64) (*PipeWriter, *os.File) {
 	dir := t.TempDir()
 
 	f, err := os.Create(filepath.Join(dir, filepath.Base(t.Name())))
@@ -74,17 +137,17 @@ func prepareReadFrom(t testing.TB, total int64) (*Pipe, *os.File) {
 	}
 	t.Cleanup(func() { f.Close() })
 
-	p, err := New()
+	pr, pw, err := New()
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { p.Close() })
+	t.Cleanup(func() { pr.Close(); pw.Close() })
 
 	// Make sure we dump all the data out of p so it doesn't fill up.
 	// This goroutine will exit once `p` is closed.
 	go func() {
 		buf := make([]byte, 1e6)
-		io.CopyBuffer(ioutil.Discard, p, buf)
+		io.CopyBuffer(ioutil.Discard, pr, buf)
 	}()
 
 	data := make([]byte, 1024*1024)
@@ -113,5 +176,5 @@ func prepareReadFrom(t testing.TB, total int64) (*Pipe, *os.File) {
 		t.Fatal(err)
 	}
 
-	return p, f
+	return pw, f
 }
