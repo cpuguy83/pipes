@@ -141,6 +141,9 @@ func (w *PipeWriter) ReadFrom(r io.Reader) (int64, error) {
 	if lr, ok := r.(*io.LimitedReader); ok {
 		rr = lr.R
 		remain = lr.N
+		if remain == 0 {
+			return 0, nil
+		}
 	}
 
 	if rc, ok := rr.(syscall.Conn); ok {
@@ -163,10 +166,6 @@ func splice(rc, wc syscall.RawConn, remain int64) (copied int64, spliceErr error
 		remain = 1 << 62
 	}
 
-	if remain == 0 {
-		return 0, nil
-	}
-
 	var readErr error
 	err := wc.Write(func(wfd uintptr) bool {
 		readErr = rc.Read(func(rfd uintptr) bool {
@@ -179,6 +178,7 @@ func splice(rc, wc syscall.RawConn, remain int64) (copied int64, spliceErr error
 						remain -= n
 					}
 				}
+
 				if spliceErr != nil {
 					if spliceErr == unix.EINTR {
 						continue
