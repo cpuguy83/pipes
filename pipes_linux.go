@@ -1,44 +1,11 @@
 package pipes
 
 import (
-	"io"
 	"os"
 	"syscall"
 
 	"golang.org/x/sys/unix"
 )
-
-type PipeReader struct {
-	fd *os.File
-}
-
-func (r *PipeReader) Read(p []byte) (int, error) {
-	return r.fd.Read(p)
-}
-
-func (r *PipeReader) Close() error {
-	return r.fd.Close()
-}
-
-func (r *PipeReader) SyscallConn() (syscall.RawConn, error) {
-	return r.fd.SyscallConn()
-}
-
-type PipeWriter struct {
-	fd *os.File
-}
-
-func (w *PipeWriter) Write(p []byte) (int, error) {
-	return w.fd.Write(p)
-}
-
-func (w *PipeWriter) Close() error {
-	return w.fd.Close()
-}
-
-func (w *PipeWriter) SyscallConn() (syscall.RawConn, error) {
-	return w.fd.SyscallConn()
-}
 
 func New() (*PipeReader, *PipeWriter, error) {
 	var p [2]int
@@ -128,77 +95,64 @@ func OpenFifo(p string, flag int, mode os.FileMode) (pr *PipeReader, pw *PipeWri
 	return pr, pw, nil
 }
 
-// ReadFrom implements io.ReaderFrom for the pipe writer. It tries to use
-// splice(2) to splice data from the passed in reader to the pipe. If the
-// reader does not support splicing then it falls back to normal io.Copy
-// semantics.
-func (w *PipeWriter) ReadFrom(r io.Reader) (int64, error) {
-	var (
-		remain int64 = 0
-		rr           = r
-	)
-
-	if lr, ok := r.(*io.LimitedReader); ok {
-		rr = lr.R
-		remain = lr.N
-		if remain == 0 {
-			return 0, nil
-		}
-	}
-
-	if rc, ok := rr.(syscall.Conn); ok {
-		if raw, err := rc.SyscallConn(); err == nil {
-			handled, n, err := w.readFrom(raw, remain)
-			if handled || err == nil {
-				return n, err
-			}
-		}
-	}
-
-	return io.Copy(w.fd, r)
-}
-
-func splice(rc, wc syscall.RawConn, remain int64) (copied int64, spliceErr error) {
-	spliceOpts := unix.SPLICE_F_MOVE | unix.SPLICE_F_NONBLOCK | unix.SPLICE_F_MORE
-
+func splice(rfd, wfd int, remain int64) (copied int64, spliceErr error) {
 	noEnd := remain == 0
 	if noEnd {
 		remain = 1 << 62
 	}
 
-	var readErr error
-	err := wc.Write(func(wfd uintptr) bool {
-		readErr = rc.Read(func(rfd uintptr) bool {
-			var n int64
-			for remain > 0 {
-				n, spliceErr = unix.Splice(int(rfd), nil, int(wfd), nil, int(remain), spliceOpts)
-				if n > 0 {
-					copied += n
-					if !noEnd {
-						remain -= n
-					}
-				}
+	spliceOpts := unix.SPLICE_F_MOVE | unix.SPLICE_F_NONBLOCK | unix.SPLICE_F_MORE
 
-				if spliceErr != nil {
-					if spliceErr == unix.EINTR {
-						continue
-					}
-					return true
-				}
+	for remain > 0 {
+		n, err := unix.Splice(rfd, nil, wfd, nil, int(remain), spliceOpts)
+		if n > 0 {
+			copied += n
+			if !noEnd {
+				remain -= n
+			}
+		}
 
-				if n == 0 {
-					// EOF
-					return true
-				}
+		spliceErr = err
+
+		if err != nil {
+			if err == unix.EINTR {
 				continue
 			}
+			return
+		}
 
+		if n == 0 {
+			// EOF
+			return
+		}
+	}
+
+	return
+}
+
+func copyRaw(rc, wc syscall.RawConn, remain int64) (copied int64, spliceErr error) {
+	var (
+		n       int64
+		readErr error
+		noEnd   = remain == 0
+	)
+
+	err := wc.Write(func(wfd uintptr) bool {
+		readErr = rc.Read(func(rfd uintptr) bool {
+			n, spliceErr = splice(int(rfd), int(wfd), remain)
+			if n > 0 {
+				copied += n
+				if !noEnd {
+					remain -= n
+				}
+			}
 			return true
 		})
+
 		if readErr != nil {
 			return true
 		}
-		if remain == 0 {
+		if remain == 0 && !noEnd {
 			return true
 		}
 		return spliceErr != unix.EAGAIN
@@ -213,42 +167,4 @@ func splice(rc, wc syscall.RawConn, remain int64) (copied int64, spliceErr error
 	}
 
 	return copied, spliceErr
-}
-
-func (w *PipeWriter) readFrom(rc syscall.RawConn, remain int64) (bool, int64, error) {
-	// TODO: Maybe cache this
-	wc, err := w.fd.SyscallConn()
-	if err != nil {
-		return false, 0, err
-	}
-
-	var handled bool
-	n, err := splice(rc, wc, remain)
-	if n > 0 {
-		handled = true
-	}
-	return handled, n, err
-}
-
-func (r *PipeReader) WriteTo(w io.Writer) (int64, error) {
-	if wc, ok := w.(syscall.Conn); ok {
-		if raw, err := wc.SyscallConn(); err == nil {
-			handled, n, err := r.writeTo(raw)
-			if handled || err == nil {
-				return n, err
-			}
-		}
-	}
-
-	return io.Copy(w, r.fd)
-}
-
-func (r *PipeReader) writeTo(w syscall.RawConn) (bool, int64, error) {
-	rc, err := r.SyscallConn()
-	if err != nil {
-		return false, 0, err
-	}
-
-	n, err := splice(rc, w, 0)
-	return n > 0, n, err
 }

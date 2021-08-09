@@ -104,6 +104,7 @@ func doBenchReadFrom(b *testing.B, total int64) {
 	}()
 
 	b.SetBytes(total)
+	b.ResetTimer()
 	b.StartTimer()
 
 	for i := 0; i < b.N; i++ {
