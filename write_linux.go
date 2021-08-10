@@ -3,6 +3,8 @@ package pipes
 import (
 	"io"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 // ReadFrom implements io.ReaderFrom for the pipe writer. It tries to use
@@ -42,10 +44,43 @@ func (w *PipeWriter) readFrom(rc syscall.RawConn, remain int64) (bool, int64, er
 		return false, 0, err
 	}
 
-	var handled bool
-	n, err := copyRaw(rc, wc, remain)
-	if n > 0 {
-		handled = true
+	var (
+		copied    int64
+		readErr   error
+		noEnd     = remain == 0
+		spliceErr error
+	)
+
+	// Beceause the reader may not be pollable we need to call `Write` first (which we know is pollable).
+	err = wc.Write(func(wfd uintptr) bool {
+		readErr = rc.Read(func(rfd uintptr) bool {
+			var n int64
+			n, spliceErr = splice(int(rfd), int(wfd), remain)
+			if n > 0 {
+				copied += n
+				if !noEnd {
+					remain -= n
+				}
+			}
+			return true
+		})
+
+		if readErr != nil {
+			return true
+		}
+		if remain == 0 && !noEnd {
+			return true
+		}
+		return spliceErr != unix.EAGAIN
+	})
+
+	if err != nil {
+		return copied > 0, copied, err
 	}
-	return handled, n, err
+
+	if readErr != nil {
+		return copied > 0, copied, readErr
+	}
+
+	return copied > 0, copied, err
 }

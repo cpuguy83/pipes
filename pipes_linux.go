@@ -2,11 +2,14 @@ package pipes
 
 import (
 	"os"
-	"syscall"
 
 	"golang.org/x/sys/unix"
 )
 
+// New creates a pipe with a read and a write end.
+// Writes on one end are met with reads on the other.
+//
+// This uses pipe2(2) to create the pipe.
 func New() (*PipeReader, *PipeWriter, error) {
 	var p [2]int
 	if err := unix.Pipe2(p[:], unix.O_CLOEXEC|unix.O_NONBLOCK); err != nil {
@@ -35,6 +38,26 @@ func Create(p string) (*PipeReader, *PipeWriter, error) {
 	return OpenFifo(p, os.O_RDWR|os.O_CREATE, 0666)
 }
 
+// OpenFifoResult is used by AsyncOpenFifo to send the results of OpenFifo to a
+// caller.
+type OpenFifoResult struct {
+	R   *PipeReader
+	W   *PipeWriter
+	Err error
+}
+
+// AsyncOpenFifo opens the fifo in a goroutine and sends the result on a channel.
+// This is usefull, for instance, if you want to open in write-only mode and the
+// read side is not yet open.
+func AsyncOpenFifo(p string, flag int, mode os.FileMode) <-chan OpenFifoResult {
+	ch := make(chan OpenFifoResult, 1)
+	go func() {
+		pr, pw, err := OpenFifo(p, flag, mode)
+		ch <- OpenFifoResult{R: pr, W: pw, Err: err}
+	}()
+	return ch
+}
+
 // OpenFifo opens a fifo from the provided path.
 // The fifo is always opened in non-blocking mode.
 //
@@ -48,7 +71,6 @@ func Create(p string) (*PipeReader, *PipeWriter, error) {
 // this semantic.
 //
 // If no open mode is specified (RDWR, RDONLY, WRONLY), then RDWR is used.
-// TODO: Is this the right way to handle the open mode?
 func OpenFifo(p string, flag int, mode os.FileMode) (pr *PipeReader, pw *PipeWriter, _ error) {
 	if flag&os.O_RDWR == 0 && flag&os.O_RDONLY == 0 && flag&os.O_WRONLY == 0 {
 		flag |= os.O_RDWR
@@ -66,20 +88,6 @@ func OpenFifo(p string, flag int, mode os.FileMode) (pr *PipeReader, pw *PipeWri
 	}
 
 	flag &= ^os.O_CREATE
-
-	if flag&unix.O_NONBLOCK != 0 && flag&os.O_RDWR == 0 {
-		// Open first with rdwr so the main open does not block
-		flag2 := flag
-		flag2 &= ^os.O_RDONLY
-		flag2 &= ^os.O_WRONLY
-		flag2 &= ^unix.O_NONBLOCK
-
-		fdrdwr, err := os.OpenFile(p, flag2|os.O_RDWR, 0)
-		if err != nil {
-			return nil, nil, err
-		}
-		defer fdrdwr.Close()
-	}
 
 	f, err := os.OpenFile(p, flag, 0)
 	if err != nil {
@@ -128,43 +136,4 @@ func splice(rfd, wfd int, remain int64) (copied int64, spliceErr error) {
 	}
 
 	return
-}
-
-func copyRaw(rc, wc syscall.RawConn, remain int64) (copied int64, spliceErr error) {
-	var (
-		n       int64
-		readErr error
-		noEnd   = remain == 0
-	)
-
-	err := wc.Write(func(wfd uintptr) bool {
-		readErr = rc.Read(func(rfd uintptr) bool {
-			n, spliceErr = splice(int(rfd), int(wfd), remain)
-			if n > 0 {
-				copied += n
-				if !noEnd {
-					remain -= n
-				}
-			}
-			return true
-		})
-
-		if readErr != nil {
-			return true
-		}
-		if remain == 0 && !noEnd {
-			return true
-		}
-		return spliceErr != unix.EAGAIN
-	})
-
-	if err != nil {
-		return copied, err
-	}
-
-	if readErr != nil {
-		return copied, readErr
-	}
-
-	return copied, spliceErr
 }

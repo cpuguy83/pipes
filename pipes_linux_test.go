@@ -146,10 +146,8 @@ func prepareReadFrom(t testing.TB, total int64) (*PipeWriter, *os.File) {
 
 	// Make sure we dump all the data out of p so it doesn't fill up.
 	// This goroutine will exit once `p` is closed.
-	go func() {
-		buf := make([]byte, 1e6)
-		io.CopyBuffer(ioutil.Discard, pr, buf)
-	}()
+	buf := make([]byte, 1e6)
+	go io.CopyBuffer(ioutil.Discard, pr, buf)
 
 	data := make([]byte, 1024*1024)
 	var copied int64
