@@ -49,13 +49,31 @@ type OpenFifoResult struct {
 // AsyncOpenFifo opens the fifo in a goroutine and sends the result on a channel.
 // This is usefull, for instance, if you want to open in write-only mode and the
 // read side is not yet open.
-func AsyncOpenFifo(p string, flag int, mode os.FileMode) <-chan OpenFifoResult {
+//
+// Note that this will create the fifo *before* returning *if* you have passed os.O_CREATE.
+func AsyncOpenFifo(p string, flag int, mode os.FileMode) (<-chan OpenFifoResult, error) {
+	if err := mkFifo(p, flag, mode); err != nil {
+		return nil, err
+	}
+
 	ch := make(chan OpenFifoResult, 1)
 	go func() {
 		pr, pw, err := OpenFifo(p, flag, mode)
 		ch <- OpenFifoResult{R: pr, W: pw, Err: err}
 	}()
-	return ch
+	return ch, nil
+}
+
+func mkFifo(p string, flag int, mode os.FileMode) error {
+	if flag&os.O_CREATE == 0 {
+		// nothing to do
+		return nil
+	}
+
+	if _, err := os.Stat(p); !os.IsNotExist(err) {
+		return err
+	}
+	return unix.Mkfifo(p, uint32(mode.Perm()))
 }
 
 // OpenFifo opens a fifo from the provided path.
@@ -76,15 +94,8 @@ func OpenFifo(p string, flag int, mode os.FileMode) (pr *PipeReader, pw *PipeWri
 		flag |= os.O_RDWR
 	}
 
-	if flag&os.O_CREATE != 0 {
-		if _, err := os.Stat(p); err != nil {
-			if !os.IsNotExist(err) {
-				return nil, nil, err
-			}
-			if err := unix.Mkfifo(p, uint32(mode.Perm())); err != nil {
-				return nil, nil, err
-			}
-		}
+	if err := mkFifo(p, flag, mode); err != nil {
+		return nil, nil, err
 	}
 
 	flag &= ^os.O_CREATE
