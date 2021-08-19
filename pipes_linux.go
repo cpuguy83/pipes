@@ -148,3 +148,19 @@ func splice(rfd, wfd int, remain int64) (copied int64, spliceErr error) {
 
 	return
 }
+
+func tee(rfd, wfd int, do int64) (copied int64, teeErr error) {
+	if do == 0 {
+		do = 1 << 62
+	}
+
+	for {
+		n, err := unix.Tee(rfd, wfd, int(do), unix.SPLICE_F_MOVE|unix.SPLICE_F_NONBLOCK)
+		if err == unix.EINTR {
+			continue
+		}
+		if n > 0 || err != nil {
+			return n, err
+		}
+	}
+}
