@@ -154,8 +154,12 @@ func tee(rfd, wfd int, do int64) (copied int64, teeErr error) {
 		do = 1 << 62
 	}
 
+	// Note, this is not using SPLICE_F_NONBLOCK otherwise we'll end up getting in
+	// a situation where we copied less than desired due to non-blocking writes,
+	// but then with tee we can't try again because the reader side has not
+	// advanced at all.
 	for {
-		n, err := unix.Tee(rfd, wfd, int(do), unix.SPLICE_F_MOVE|unix.SPLICE_F_NONBLOCK)
+		n, err := unix.Tee(rfd, wfd, int(do), unix.SPLICE_F_MOVE)
 		if err == unix.EINTR {
 			continue
 		}

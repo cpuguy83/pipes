@@ -2,6 +2,7 @@ package pipes
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"sync"
 	"syscall"
@@ -24,9 +25,15 @@ func NewCopier(ctx context.Context, r *PipeReader, writers ...*PipeWriter) (*Cop
 		return nil, err
 	}
 
+	var buf [2]int
+	if err := unix.Pipe2(buf[:], unix.O_NONBLOCK|unix.O_CLOEXEC); err != nil {
+		return nil, fmt.Errorf("error creating pipe buffer: %w", err)
+	}
+
 	c := &Copier{
 		r:       rwc,
 		writers: ls,
+		buf:     buf,
 	}
 
 	c.cond = sync.NewCond(&c.mu)
@@ -44,94 +51,177 @@ type Copier struct {
 	cond      *sync.Cond
 	pending   []syscall.RawConn
 	closedErr error
+
+	buf [2]int
+
+	// This is used for teseting purposes
+	_lastErr error
 }
 
 func (c *Copier) run(ctx context.Context) {
-	for {
-		c.cond.L.Lock()
-		for c.closedErr == nil && len(c.writers) == 0 && ctx.Err() == nil && len(c.pending) == 0 {
-			c.cond.Wait()
-		}
+	defer func() {
+		unix.Close(c.buf[0])
+		unix.Close(c.buf[1])
+	}()
 
-		if c.closedErr != nil || ctx.Err() != nil {
-			if c.closedErr == nil {
-				c.closedErr = ctx.Err()
-			}
-			c.cond.L.Unlock()
+	for {
+		if err := c.wait(ctx); err != nil {
 			return
 		}
-
-		c.writers = append(c.writers, c.pending...)
-		c.pending = c.pending[:0]
-
-		c.cond.L.Unlock()
 
 		c.doCopy(ctx)
 	}
 }
 
+func (c *Copier) setClosedErr(err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if err == nil || c.closedErr != nil {
+		return
+	}
+
+	c.closedErr = err
+}
+
 func (c *Copier) Add(w *PipeWriter) error {
 	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	if err := c.closedErr; err != nil {
-		c.mu.Unlock()
 		return err
 	}
-	c.mu.Unlock()
 
 	wrc, err := w.SyscallConn()
 	if err != nil {
 		return err
 	}
 
-	c.mu.Lock()
 	c.pending = append(c.pending, wrc)
-	c.mu.Unlock()
 	c.cond.Signal()
 
 	return nil
 }
 
+func (c *Copier) lastErr() error {
+	c.mu.Lock()
+	err := c._lastErr
+	c.mu.Unlock()
+	return err
+}
+
+func (c *Copier) shouldWait(ctx context.Context) bool {
+	return len(c.writers) == 0 && len(c.pending) == 0 && c.closedErr == nil && ctx.Err() == nil
+}
+
+func (c *Copier) wait(ctx context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for c.shouldWait(ctx) {
+		c.cond.Wait()
+	}
+
+	if c.closedErr != nil {
+		return c.closedErr
+	}
+
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
+	if len(c.pending) > 0 {
+		c.writers = append(c.writers, c.pending...)
+		c.pending = c.pending[:0]
+	}
+	return nil
+}
+
 func (c *Copier) doCopy(ctx context.Context) {
 	if ctx.Err() != nil {
-		c.mu.Lock()
-		c.closedErr = ctx.Err()
-		c.mu.Unlock()
+		c.setClosedErr(ctx.Err())
 		return
 	}
 
 	var (
-		first = true
 		evict []int
 	)
 
 	err := c.r.Read(func(rfd uintptr) bool {
-		if first {
-			first = false
-			return false
+		if err := c.wait(ctx); err != nil {
+			return true
 		}
 
 		var (
-			total int64
+			spliced bool
 		)
+
+		total, err := splice(int(rfd), c.buf[1], 0)
+		if err != nil && err != unix.EAGAIN {
+			c.setClosedErr(err)
+			return true
+		}
+
+		if total == 0 {
+			if err == unix.EAGAIN {
+				return false
+			}
+			if err == nil {
+				c.setClosedErr(io.EOF)
+				return true
+			}
+		}
+
 		for i, wrc := range c.writers {
 			if ctx.Err() != nil {
-				c.closedErr = ctx.Err()
+				c.setClosedErr(ctx.Err())
 				return true
 			}
 
 			if i == len(c.writers)-1 {
-				n, err := c.doSplice(rfd, wrc, total)
-				if err != nil || (total > 0 && n < total) {
+				n, err := c.doSplice(uintptr(c.buf[0]), wrc, total)
+				if (err != nil && err != unix.EAGAIN) || (total > 0 && n < total) {
+					c.mu.Lock()
+					c._lastErr = err
+					c.mu.Unlock()
 					evict = append(evict, i)
 				}
 			} else {
-				n, err := c.doTee(rfd, wrc, total)
+				n, err := c.doTee(uintptr(c.buf[0]), wrc, total)
 				if err != nil || (total > 0 && n < total) {
-					evict = append(evict, i)
-					continue
+					if err != unix.EAGAIN && total > 0 && n < total {
+						c.mu.Lock()
+						c._lastErr = err
+						c.mu.Unlock()
+						evict = append(evict, i)
+						continue
+					}
 				}
-				if i == 0 {
+				if total == 0 {
 					total = n
+				}
+			}
+		}
+
+		// We only splice on the last writer
+		// If for some reason we couldn't do that then we need to drain that data
+		// from the buffer.
+		if !spliced && total > 0 {
+			buf := make([]byte, 32*1024)
+			nn := total
+			for nn > 0 {
+				if int64(len(buf)) > nn {
+					buf = buf[:nn]
+				}
+				n, err := unix.Read(c.buf[0], buf)
+				if n > 0 {
+					nn -= int64(n)
+				}
+				if err != nil {
+					if err != unix.EAGAIN {
+						c.setClosedErr(err)
+					}
+					return true
 				}
 			}
 		}
@@ -144,11 +234,7 @@ func (c *Copier) doCopy(ctx context.Context) {
 	}
 
 	if err != nil {
-		c.mu.Lock()
-		if c.closedErr == nil {
-			c.closedErr = err
-		}
-		c.mu.Unlock()
+		c.setClosedErr(err)
 	}
 }
 
@@ -171,12 +257,6 @@ func (c *Copier) doSplice(rfd uintptr, wrc syscall.RawConn, total int64) (int64,
 			written += n
 		}
 		spliceErr = err
-
-		if err == unix.EAGAIN {
-			if total > 0 && written < total {
-				return false
-			}
-		}
 
 		if n == 0 && spliceErr == nil {
 			spliceErr = io.EOF
@@ -203,8 +283,10 @@ func (c *Copier) doTee(rfd uintptr, wrc syscall.RawConn, total int64) (int64, er
 		}
 		teeErr = err
 
-		if n == 0 && err == nil {
-			teeErr = io.EOF
+		if n == 0 {
+			if err == nil {
+				teeErr = io.EOF
+			}
 		}
 
 		return true

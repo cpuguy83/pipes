@@ -3,12 +3,30 @@ package pipes
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
+	"runtime"
 	"testing"
 	"time"
 )
 
 func TestCopier(t *testing.T) {
+	var c *Copier
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	defer func() {
+		if !t.Failed() {
+			return
+		}
+
+		buf := make([]byte, 1e6)
+		runtime.Stack(buf, true)
+		fmt.Println(string(buf))
+		t.Logf("%+v", *c)
+	}()
+
 	r1, w1 := newPipe(t)
 	r2, w2 := newPipe(t)
 	r3, w3 := newPipe(t)
@@ -22,10 +40,8 @@ func TestCopier(t *testing.T) {
 	go io.Copy(buf2, r3)
 	go io.Copy(buf3, r4)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	c, err := NewCopier(ctx, r1, w2, w3)
+	var err error
+	c, err = NewCopier(ctx, r1, w2, w3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,13 +65,13 @@ func TestCopier(t *testing.T) {
 
 	checkBuffer(t, buf1, "hello world")
 	checkBuffer(t, buf2, "hello world")
-	checkBuffer(t, buf3, "hello world")
+	checkBuffer(t, buf3, " world")
 }
 
 func checkBuffer(t *testing.T, buf *bytes.Buffer, val string) {
 	t.Helper()
 
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 100; i++ {
 		if buf.String() == val {
 			return
 		}
