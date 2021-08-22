@@ -31,27 +31,27 @@ bottleneck. However, the benchmarks do let us compare throughput across
 different implementations with the same bottlenecks.
 
 ```
-name                           old time/op    new time/op    delta
-ReadFrom/regular_file/16K-4      32.9µs ± 0%    16.9µs ± 0%   ~     (p=1.000 n=1+1)
-ReadFrom/regular_file/32K-4      43.4µs ± 0%    24.4µs ± 0%   ~     (p=1.000 n=1+1)
-ReadFrom/regular_file/64K-4      65.5µs ± 0%    39.1µs ± 0%   ~     (p=1.000 n=1+1)
-ReadFrom/regular_file/128K-4      103µs ± 0%      62µs ± 0%   ~     (p=1.000 n=1+1)
-ReadFrom/regular_file/256K-4      172µs ± 0%      99µs ± 0%   ~     (p=1.000 n=1+1)
-ReadFrom/regular_file/512K-4      300µs ± 0%     178µs ± 0%   ~     (p=1.000 n=1+1)
-ReadFrom/regular_file/1MB-4       552µs ± 0%     323µs ± 0%   ~     (p=1.000 n=1+1)
-ReadFrom/regular_file/10MB-4     5.26ms ± 0%    3.63ms ± 0%   ~     (p=1.000 n=1+1)
-ReadFrom/regular_file/100MB-4    54.7ms ± 0%    35.9ms ± 0%   ~     (p=1.000 n=1+1)
-ReadFrom/regular_file/1GB-4       552ms ± 0%     383ms ± 0%   ~     (p=1.000 n=1+1)
+benchmark                                  old ns/op     new ns/op     delta
+BenchmarkReadFrom/regular_file/16K-4       32933         16940         -48.56%
+BenchmarkReadFrom/regular_file/32K-4       43407         24365         -43.87%
+BenchmarkReadFrom/regular_file/64K-4       65497         39097         -40.31%
+BenchmarkReadFrom/regular_file/128K-4      102643        61719         -39.87%
+BenchmarkReadFrom/regular_file/256K-4      172160        99404         -42.26%
+BenchmarkReadFrom/regular_file/512K-4      299951        178221        -40.58%
+BenchmarkReadFrom/regular_file/1MB-4       552199        322710        -41.56%
+BenchmarkReadFrom/regular_file/10MB-4      5256567       3632938       -30.89%
+BenchmarkReadFrom/regular_file/100MB-4     54652792      35899298      -34.31%
+BenchmarkReadFrom/regular_file/1GB-4       552312826     383047329     -30.65%
 
-name                           old speed      new speed      delta
-ReadFrom/regular_file/16K-4     497MB/s ± 0%   967MB/s ± 0%   ~     (p=1.000 n=1+1)
-ReadFrom/regular_file/32K-4     755MB/s ± 0%  1345MB/s ± 0%   ~     (p=1.000 n=1+1)
-ReadFrom/regular_file/64K-4    1.00GB/s ± 0%  1.68GB/s ± 0%   ~     (p=1.000 n=1+1)
-ReadFrom/regular_file/128K-4   1.28GB/s ± 0%  2.12GB/s ± 0%   ~     (p=1.000 n=1+1)
-ReadFrom/regular_file/256K-4   1.52GB/s ± 0%  2.64GB/s ± 0%   ~     (p=1.000 n=1+1)
-ReadFrom/regular_file/512K-4   1.75GB/s ± 0%  2.94GB/s ± 0%   ~     (p=1.000 n=1+1)
-ReadFrom/regular_file/1MB-4    1.90GB/s ± 0%  3.25GB/s ± 0%   ~     (p=1.000 n=1+1)
-ReadFrom/regular_file/10MB-4   1.99GB/s ± 0%  2.89GB/s ± 0%   ~     (p=1.000 n=1+1)
-ReadFrom/regular_file/100MB-4  1.92GB/s ± 0%  2.92GB/s ± 0%   ~     (p=1.000 n=1+1)
-ReadFrom/regular_file/1GB-4    1.94GB/s ± 0%  2.80GB/s ± 0%   ~     (p=1.000 n=1+1)
+benchmark                                  old MB/s     new MB/s     speedup
+BenchmarkReadFrom/regular_file/16K-4       497.49       967.17       1.94x
+BenchmarkReadFrom/regular_file/32K-4       754.89       1344.89      1.78x
+BenchmarkReadFrom/regular_file/64K-4       1000.60      1676.24      1.68x
+BenchmarkReadFrom/regular_file/128K-4      1276.96      2123.68      1.66x
+BenchmarkReadFrom/regular_file/256K-4      1522.67      2637.17      1.73x
+BenchmarkReadFrom/regular_file/512K-4      1747.91      2941.78      1.68x
+BenchmarkReadFrom/regular_file/1MB-4       1898.91      3249.28      1.71x
+BenchmarkReadFrom/regular_file/10MB-4      1994.79      2886.30      1.45x
+BenchmarkReadFrom/regular_file/100MB-4     1918.61      2920.88      1.52x
+BenchmarkReadFrom/regular_file/1GB-4       1944.08      2803.16      1.44x
 ```
