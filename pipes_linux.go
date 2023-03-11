@@ -105,10 +105,40 @@ func OpenFifo(p string, flag int, mode os.FileMode) (pr *PipeReader, pw *PipeWri
 		return nil, nil, err
 	}
 
+	var maybeDup bool
 	if flag&os.O_RDONLY != 0 || flag&os.O_RDWR != 0 {
+		maybeDup = true
 		pr = &PipeReader{fd: f}
 	}
 	if flag&os.O_WRONLY != 0 || flag&os.O_RDWR != 0 {
+		if maybeDup {
+			// we need to dup the file descriptor so we can have two
+			// file descriptors open to the same fifo.
+			// This is because the underlying file descriptor is shared
+			// between the two ends of the fifo.
+
+			rc, err := f.SyscallConn()
+			if err != nil {
+				return nil, nil, err
+			}
+
+			var (
+				dupErr error
+				nfd    int
+			)
+			err = rc.Control(func(fd uintptr) {
+				nfd, dupErr = unix.Dup(int(fd))
+			})
+			if err == nil && dupErr != nil {
+				dupErr = os.NewSyscallError("dup", dupErr)
+			}
+			if err != nil {
+				return nil, nil, err
+			}
+
+			f = os.NewFile(uintptr(nfd), p)
+
+		}
 		pw = &PipeWriter{fd: f}
 	}
 	return pr, pw, nil

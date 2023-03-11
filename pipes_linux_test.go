@@ -156,6 +156,22 @@ func TestOpenFifo(t *testing.T) {
 	})
 }
 
+func TestOpenFifoCloseRDWR(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, filepath.Base(t.Name()))
+
+	r, w, err := OpenFifo(p, os.O_RDWR|os.O_CREATE, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func BenchmarkReadFrom(b *testing.B) {
 	benchReadFromFile(b)
 }
