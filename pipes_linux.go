@@ -155,9 +155,9 @@ func splice(rfd, wfd int, remain int64) (copied int64, spliceErr error) {
 	for remain > 0 {
 		n, err := unix.Splice(rfd, nil, wfd, nil, int(remain), spliceOpts)
 		if n > 0 {
-			copied += n
+			copied += int64(n)
 			if !noEnd {
-				remain -= n
+				remain -= int64(n)
 			}
 		}
 
